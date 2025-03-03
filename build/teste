@@ -1,1 +1,438 @@
+import json
+import os
+from datetime import datetime
+import tkinter as tk
+from tkinter import simpledialog, messagebox, filedialog
+import qrcode
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
+class Veiculo:
+    def __init__(self, placa, hora_entrada=None):
+        self.placa = placa
+        self.hora_entrada = hora_entrada or datetime.now()
+        self.hora_saida = None
+
+    def registrar_saida(self):
+        self.hora_saida = datetime.now()
+
+    def calcular_tempo_permanencia(self):
+        if self.hora_saida:
+            return (self.hora_saida - self.hora_entrada).total_seconds() / 60
+        return None
+
+    def calcular_valor(self, preco_por_hora=5.0):
+        tempo = self.calcular_tempo_permanencia()
+        if tempo:
+            return round((tempo / 60) * preco_por_hora, 2)
+        return 0
+
+    def gerar_qr_code(self, valor):
+        chave_pix = "00020126560014BR.GOV.BCB.PIX0134joaorayangomesfernandes4@gmail.com5204000053039865802BR5901N6001C62070503***6304C257"
+        descricao = f"Pagamento estacionamento - {self.placa}"
+        pix_dados = f"""
+        {chave_pix}
+        """
+        qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+        qr.add_data(pix_dados)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+        return img
+
+class Estacionamento:
+    def __init__(self, total_vagas):
+        self.total_vagas = total_vagas
+        self.vagas = {}
+
+    def estacionar(self, veiculo):
+        if len(self.vagas) >= self.total_vagas:
+            return None
+        numero_vaga = len(self.vagas) + 1
+        self.vagas[numero_vaga] = veiculo
+        self.salvar_vaga_txt(numero_vaga, veiculo)
+        return numero_vaga
+
+    def estacionar_em_vaga_especifica(self, veiculo, vaga):
+        if vaga in self.vagas:
+            return False
+        if vaga > self.total_vagas or vaga <= 0:
+            return None
+        self.vagas[vaga] = veiculo
+        self.salvar_vaga_txt(vaga, veiculo)
+        return True
+
+    def registrar_saida(self, placa, preco_por_hora=5.0):
+        for vaga, veiculo in self.vagas.items():
+            if veiculo.placa == placa:
+                veiculo.registrar_saida()
+                valor = veiculo.calcular_valor(preco_por_hora)
+                qr_code_img = veiculo.gerar_qr_code(valor)
+                self.salvar_vaga_txt(vaga, veiculo)
+                del self.vagas[vaga]
+                return vaga, valor, qr_code_img
+        return None, 0, None
+
+    def procurar_veiculo(self, placa):
+        for vaga, veiculo in self.vagas.items():
+            if veiculo.placa == placa:
+                return vaga, veiculo
+        return None, None
+
+    def resumo_ocupacao(self):
+        ocupacao = []
+        vagas_preenchidas = len(self.vagas)  # Quantidade de vagas preenchidas
+
+        # Informações gerais sobre o estacionamento
+        resumo_geral = {
+            'vagas_totais': self.total_vagas,
+            'vagas_preenchidas': vagas_preenchidas,
+            'vagas_disponiveis': self.total_vagas - vagas_preenchidas
+        }
+
+        # Informações sobre cada vaga ocupada
+        for vaga, veiculo in self.vagas.items():
+            veiculo_info = {
+                'vaga': vaga,
+                'placa': veiculo.placa,
+                'hora_entrada': veiculo.hora_entrada.strftime('%Y-%m-%d %H:%M:%S'),
+                'hora_saida': veiculo.hora_saida.strftime('%Y-%m-%d %H:%M:%S') if veiculo.hora_saida else 'Não registrada',
+                'tempo_permanencia': f"{veiculo.calcular_tempo_permanencia():.2f} minutos" if veiculo.calcular_tempo_permanencia() else 'Não calculado',
+                'valor_a_pagar': f"R${veiculo.calcular_valor():.2f}" if veiculo.calcular_valor() else 'R$0,00'
+            }
+            ocupacao.append(veiculo_info)
+
+        return resumo_geral, ocupacao
+
+    def salvar_vaga_txt(self, vaga, veiculo):
+        filename = f"vaga_{vaga}.txt"
+        with open(filename, 'w') as file:
+            file.write(f"===== Informações da Vaga {vaga} =====\n")
+            file.write(f"Placa do Veículo: {veiculo.placa}\n")
+            file.write(f"Hora de Entrada: {veiculo.hora_entrada.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if veiculo.hora_saida:
+                file.write(f"Hora de Saída: {veiculo.hora_saida.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                file.write(f"Tempo de Permanência (minutos): {veiculo.calcular_tempo_permanencia()}\n")
+                file.write(f"Valor a Pagar: R${veiculo.calcular_valor():.2f}\n")
+            else:
+                file.write("Hora de Saída: Não registrada\n")
+            file.write("========================================\n")
+
+    def salvar_dados_json(self, filename):
+        dados = {
+            'total_vagas': self.total_vagas,
+            'vagas': {
+                vaga: {
+                    'placa': veiculo.placa,
+                    'hora_entrada': veiculo.hora_entrada.strftime('%Y-%m-%d %H:%M:%S.%f')
+                }
+                for vaga, veiculo in self.vagas.items()
+            }
+        }
+        with open(filename, 'w') as file:
+            json.dump(dados, file, indent=4)
+
+    def limpar_dados(self):
+        self.vagas = {}
+        messagebox.showinfo("Sucesso", "Todos os dados foram apagados com sucesso!")
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Sistema de Estacionamento")
+        self.estacionamento = None
+
+        self.carregar_dados_iniciais()
+
+        self.frames = {}
+        for F in (MenuPrincipal, EstacionarVeiculo, EstacionarVagaEspecifica, RegistrarSaida, ProcurarVeiculo, ResumoOcupacao):
+            page_name = F.__name__
+            frame = F(parent=root, controller=self)
+            self.frames[page_name] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
+
+        self.show_frame("MenuPrincipal")
+
+    def carregar_dados_iniciais(self):
+        if messagebox.askyesno("Carregar Dados", "Deseja carregar dados existentes?"):
+            self.carregar_dados()
+        else:
+            total_vagas = simpledialog.askinteger("Configurar Estacionamento", "Digite o número total de vagas:")
+            if total_vagas:
+                self.estacionamento = Estacionamento(total_vagas)
+            else:
+                messagebox.showerror("Erro", "Número de vagas inválido!")
+                self.root.quit()
+
+    def carregar_dados(self):
+        filepath = filedialog.askopenfilename(title="Selecione o arquivo JSON", filetypes=[("Arquivos JSON", "*.json")])
+        if filepath:
+            try:
+                with open(filepath, 'r') as file:
+                    data = json.load(file)
+                    total_vagas = data.get('total_vagas')
+                    vagas_data = data.get('vagas')
+
+                    self.estacionamento = Estacionamento(total_vagas)
+                    for vaga, veiculo_data in vagas_data.items():
+                        veiculo = Veiculo(
+                            placa=veiculo_data['placa'],
+                            hora_entrada=datetime.strptime(veiculo_data['hora_entrada'], '%Y-%m-%d %H:%M:%S.%f')
+                        )
+                        self.estacionamento.vagas[int(vaga)] = veiculo
+
+                    messagebox.showinfo("Sucesso", "Dados carregados com sucesso!")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao carregar dados: {e}")
+
+    def salvar_dados(self):
+        if self.estacionamento:
+            filepath = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("Arquivos JSON", "*.json")])
+            if filepath:
+                try:
+                    self.estacionamento.salvar_dados_json(filepath)
+                    messagebox.showinfo("Sucesso", "Os dados foram salvos em JSON e TXT!")
+                except Exception as e:
+                    messagebox.showerror("Erro", f"Erro ao salvar dados: {e}")
+
+    def show_frame(self, page_name):
+        frame = self.frames[page_name]
+        frame.tkraise()
+
+class MenuPrincipal(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+
+        label = tk.Label(self, text="Menu Principal")
+        label.pack(pady=10)
+
+        buttons = [
+            ("Estacionar Veículo", "EstacionarVeiculo"),
+            ("Estacionar em Vaga Específica", "EstacionarVagaEspecifica"),
+            ("Registrar Saída de Veículo", "RegistrarSaida"),
+            ("Procurar Veículo", "ProcurarVeiculo"),
+            ("Resumo da Ocupação", "ResumoOcupacao"),
+            ("Salvar Dados", self.salvar_dados),
+            ("Apagar Todos os Dados", self.apagar_dados),
+            ("Finalizar Programa", self.controller.root.quit)
+        ]
+
+        for text, command in buttons:
+            button = tk.Button(self, text=text, command=lambda c=command: self.controller.show_frame(c) if isinstance(c, str) else c())
+            button.pack(pady=5, fill="x")
+
+    def salvar_dados(self):
+        if messagebox.askyesno("Salvar Dados", "Deseja salvar os dados atuais?"):
+            self.controller.salvar_dados()
+
+    def apagar_dados(self):
+        if messagebox.askyesno("Apagar Dados", "Tem certeza que deseja apagar todos os dados?"):
+            self.controller.estacionamento.limpar_dados()
+
+class EstacionarVeiculo(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+
+        label = tk.Label(self, text="Estacionar Veículo")
+        label.pack(pady=10)
+
+        # Rótulo e campo para a placa do veículo
+        placa_label = tk.Label(self, text="Placa do Veículo:")
+        placa_label.pack(pady=5)
+        self.placa_entry = tk.Entry(self)
+        self.placa_entry.pack(pady=5)
+
+        button_estacionar = tk.Button(self, text="Estacionar", command=self.estacionar)
+        button_estacionar.pack(pady=5)
+
+        button_voltar = tk.Button(self, text="Voltar", command=lambda: controller.show_frame("MenuPrincipal"))
+        button_voltar.pack(pady=5)
+
+    def estacionar(self):
+        placa = self.placa_entry.get()
+        if placa:
+            if len(placa) != 7:
+                messagebox.showerror("Erro", "A placa deve conter exatamente 7 caracteres!")
+                return
+            veiculo = Veiculo(placa)
+            vaga = self.controller.estacionamento.estacionar(veiculo)
+            if vaga:
+                messagebox.showinfo("Estacionar Veículo", f"Veículo estacionado na vaga {vaga}.")
+            else:
+                messagebox.showerror("Erro", "Estacionamento lotado!")
+
+class EstacionarVagaEspecifica(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+
+        label = tk.Label(self, text="Estacionar em Vaga Específica")
+        label.pack(pady=10)
+
+        # Rótulo e campo para a placa do veículo
+        placa_label = tk.Label(self, text="Placa do Veículo:")
+        placa_label.pack(pady=5)
+        self.placa_entry = tk.Entry(self)
+        self.placa_entry.pack(pady=5)
+
+        # Rótulo e campo para o número da vaga
+        vaga_label = tk.Label(self, text="Número da Vaga:")
+        vaga_label.pack(pady=5)
+        self.vaga_entry = tk.Entry(self)
+        self.vaga_entry.pack(pady=5)
+
+        button_estacionar = tk.Button(self, text="Estacionar", command=self.estacionar)
+        button_estacionar.pack(pady=5)
+
+        button_voltar = tk.Button(self, text="Voltar", command=lambda: controller.show_frame("MenuPrincipal"))
+        button_voltar.pack(pady=5)
+
+    def estacionar(self):
+        placa = self.placa_entry.get()
+        vaga = self.vaga_entry.get()
+        if placa and vaga:
+            if len(placa) != 7:
+                messagebox.showerror("Erro", "A placa deve conter exatamente 7 caracteres!")
+                return
+            try:
+                vaga = int(vaga)
+                veiculo = Veiculo(placa)
+                resultado = self.controller.estacionamento.estacionar_em_vaga_especifica(veiculo, vaga)
+                if resultado is None:
+                    messagebox.showerror("Erro", "Número de vaga inválido!")
+                elif resultado:
+                    messagebox.showinfo("Estacionar Veículo", f"Veículo estacionado na vaga {vaga}.")
+                else:
+                    messagebox.showerror("Erro", "Vaga já está ocupada!")
+            except ValueError:
+                messagebox.showerror("Erro", "Número de vaga inválido!")
+
+class RegistrarSaida(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+
+        label = tk.Label(self, text="Registrar Saída de Veículo")
+        label.pack(pady=10)
+
+        # Rótulo e campo para a placa do veículo
+        placa_label = tk.Label(self, text="Placa do Veículo:")
+        placa_label.pack(pady=5)
+        self.placa_entry = tk.Entry(self)
+        self.placa_entry.pack(pady=5)
+
+        button_registrar = tk.Button(self, text="Registrar Saída", command=self.registrar_saida)
+        button_registrar.pack(pady=5)
+
+        button_voltar = tk.Button(self, text="Voltar", command=self.voltar)
+        button_voltar.pack(pady=5)
+
+        self.qr_frame = tk.Frame(self)
+        self.qr_frame.pack(pady=10)
+
+    def registrar_saida(self):
+        placa = self.placa_entry.get()
+        if placa:
+            vaga, valor, qr_code_img = self.controller.estacionamento.registrar_saida(placa)
+            if vaga:
+                messagebox.showinfo("Registrar Saída", f"Veículo removido da vaga {vaga}.\nValor a pagar: R${valor:.2f}")
+                if qr_code_img:
+                    self.exibir_qr_code(qr_code_img)
+            else:
+                messagebox.showerror("Erro", "Veículo não encontrado!")
+
+    def exibir_qr_code(self, qr_code_img):
+        self.limpar_qr_code()
+        img_np = qr_code_img.get_image()
+        self.fig, self.ax = plt.subplots(figsize=(4, 4))
+        self.ax.imshow(img_np, cmap='gray')
+        self.ax.axis('off')
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.qr_frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack()
+
+    def limpar_qr_code(self):
+        for widget in self.qr_frame.winfo_children():
+            widget.destroy()
+
+    def voltar(self):
+        self.limpar_qr_code()
+        self.controller.show_frame("MenuPrincipal")
+
+class ProcurarVeiculo(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+
+        label = tk.Label(self, text="Procurar Veículo")
+        label.pack(pady=10)
+
+        # Rótulo e campo para a placa do veículo
+        placa_label = tk.Label(self, text="Placa do Veículo:")
+        placa_label.pack(pady=5)
+        self.placa_entry = tk.Entry(self)
+        self.placa_entry.pack(pady=5)
+
+        button_procurar = tk.Button(self, text="Procurar", command=self.procurar)
+        button_procurar.pack(pady=5)
+
+        button_voltar = tk.Button(self, text="Voltar", command=lambda: controller.show_frame("MenuPrincipal"))
+        button_voltar.pack(pady=5)
+
+    def procurar(self):
+        placa = self.placa_entry.get()
+        if placa:
+            vaga, veiculo = self.controller.estacionamento.procurar_veiculo(placa)
+            if vaga:
+                messagebox.showinfo("Veículo Encontrado", f"Veículo encontrado na Vaga {vaga}:\nPlaca: {veiculo.placa}\nHora de Entrada: {veiculo.hora_entrada.strftime('%Y-%m-%d %H:%M:%S')}")
+            else:
+                messagebox.showerror("Veículo Não Encontrado", "Veículo não encontrado no estacionamento!")
+
+class ResumoOcupacao(tk.Frame):
+    def __init__(self, parent, controller):
+        tk.Frame.__init__(self, parent)
+        self.controller = controller
+
+        label = tk.Label(self, text="Resumo da Ocupação")
+        label.pack(pady=10)
+
+        self.resumo_text = tk.Text(self, wrap=tk.WORD)
+        self.resumo_text.pack(pady=5, fill="both", expand=True)
+
+        button_atualizar = tk.Button(self, text="Atualizar Resumo", command=self.atualizar_resumo)
+        button_atualizar.pack(pady=5)
+
+        button_voltar = tk.Button(self, text="Voltar", command=lambda: controller.show_frame("MenuPrincipal"))
+        button_voltar.pack(pady=5)
+
+    def atualizar_resumo(self):
+        resumo_geral, ocupacao = self.controller.estacionamento.resumo_ocupacao()
+        self.resumo_text.delete(1.0, tk.END)
+
+        # Exibir informações gerais
+        self.resumo_text.insert(tk.END, "=== Informações Gerais ===\n")
+        self.resumo_text.insert(tk.END, f"Vagas Totais: {resumo_geral['vagas_totais']}\n")
+        self.resumo_text.insert(tk.END, f"Vagas Preenchidas: {resumo_geral['vagas_preenchidas']}\n")
+        self.resumo_text.insert(tk.END, f"Vagas Disponíveis: {resumo_geral['vagas_disponiveis']}\n")
+        self.resumo_text.insert(tk.END, "=" * 30 + "\n\n")
+
+        # Exibir detalhes das vagas ocupadas
+        if ocupacao:
+            self.resumo_text.insert(tk.END, "=== Vagas Ocupadas ===\n")
+            for vaga_info in ocupacao:
+                self.resumo_text.insert(tk.END, f"\nVaga {vaga_info['vaga']}:\n")
+                self.resumo_text.insert(tk.END, f"Placa: {vaga_info['placa']}\n")
+                self.resumo_text.insert(tk.END, f"Hora de Entrada: {vaga_info['hora_entrada']}\n")
+                self.resumo_text.insert(tk.END, f"Hora de Saída: {vaga_info['hora_saida']}\n")
+                self.resumo_text.insert(tk.END, f"Tempo de Permanência: {vaga_info['tempo_permanencia']}\n")
+                self.resumo_text.insert(tk.END, f"Valor a Pagar: {vaga_info['valor_a_pagar']}\n")
+                self.resumo_text.insert(tk.END, "-" * 30 + "\n")
+        else:
+            self.resumo_text.insert(tk.END, "Estacionamento vazio.\n")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()
