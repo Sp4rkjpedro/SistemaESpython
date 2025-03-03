@@ -1,1 +1,202 @@
+import pytest
+from datetime import datetime, timedelta
+from main import Veiculo, Estacionamento  # Importando do main.py
+import json
 
+# Fixtures para reutilização
+@pytest.fixture
+def veiculo():
+    return Veiculo(placa="ABC1234")
+
+@pytest.fixture
+def estacionamento():
+    return Estacionamento(total_vagas=10)
+
+# Testes para a classe Veiculo
+def test_calcular_tempo_permanencia(veiculo):
+    # Teste sem saída registrada
+    assert veiculo.calcular_tempo_permanencia() is None
+
+    # Teste com saída registrada
+    veiculo.registrar_saida()
+    assert isinstance(veiculo.calcular_tempo_permanencia(), float)
+
+def test_calcular_valor(veiculo):
+    # Teste sem saída registrada
+    assert veiculo.calcular_valor() == 0
+
+    # Teste com saída registrada
+    veiculo.hora_entrada = datetime.now() - timedelta(hours=2)
+    veiculo.registrar_saida()
+    assert veiculo.calcular_valor(preco_por_hora=5.0) == 10.0
+
+def test_gerar_qr_code(veiculo):
+    qr_code_img = veiculo.gerar_qr_code(valor=10.0)
+    assert qr_code_img is not None
+
+# Testes para a classe Estacionamento
+def test_estacionar(estacionamento, veiculo):
+    # Teste de estacionamento em vaga disponível
+    vaga = estacionamento.estacionar(veiculo)
+    assert vaga == 1
+    assert len(estacionamento.vagas) == 1
+
+    # Teste de estacionamento com estacionamento lotado
+    for i in range(2, 11):
+        estacionamento.estacionar(Veiculo(placa=f"XYZ{i}"))
+    assert estacionamento.estacionar(Veiculo(placa="XYZ11")) is None
+
+def test_estacionar_em_vaga_especifica(estacionamento, veiculo):
+    # Teste de estacionamento em vaga específica disponível
+    assert estacionamento.estacionar_em_vaga_especifica(veiculo, 5) is True
+    assert 5 in estacionamento.vagas
+
+    # Teste de estacionamento em vaga já ocupada
+    assert estacionamento.estacionar_em_vaga_especifica(Veiculo(placa="XYZ123"), 5) is False
+
+    # Teste de estacionamento em vaga inválida
+    assert estacionamento.estacionar_em_vaga_especifica(veiculo, 15) is None
+
+def test_registrar_saida(estacionamento, veiculo):
+    # Estaciona o veículo
+    vaga = estacionamento.estacionar(veiculo)
+
+    # Registra a saída
+    vaga_saida, valor, qr_code_img = estacionamento.registrar_saida(veiculo.placa)
+    assert vaga_saida == vaga
+    assert valor > 0
+    assert qr_code_img is not None
+
+    # Teste com veículo não encontrado
+    vaga_saida, valor, qr_code_img = estacionamento.registrar_saida("XYZ999")
+    assert vaga_saida is None
+    assert valor == 0
+    assert qr_code_img is None
+
+def test_procurar_veiculo(estacionamento, veiculo):
+    # Estaciona o veículo
+    vaga = estacionamento.estacionar(veiculo)
+
+    # Procura o veículo
+    vaga_encontrada, veiculo_encontrado = estacionamento.procurar_veiculo(veiculo.placa)
+    assert vaga_encontrada == vaga
+    assert veiculo_encontrado.placa == veiculo.placa
+
+    # Teste com veículo não encontrado
+    vaga_encontrada, veiculo_encontrado = estacionamento.procurar_veiculo("XYZ999")
+    assert vaga_encontrada is None
+    assert veiculo_encontrado is None
+
+def test_resumo_ocupacao(estacionamento, veiculo):
+    # Estaciona o veículo
+    estacionamento.estacionar(veiculo)
+
+    # Obtém o resumo
+    resumo_geral, ocupacao = estacionamento.resumo_ocupacao()
+    assert resumo_geral["vagas_totais"] == 10
+    assert resumo_geral["vagas_preenchidas"] == 1
+    assert resumo_geral["vagas_disponiveis"] == 9
+    assert len(ocupacao) == 1
+
+def test_salvar_vaga_txt(estacionamento, veiculo):
+    # Estaciona o veículo
+    vaga = estacionamento.estacionar(veiculo)
+
+    # Verifica se o arquivo foi criado
+    filename = f"vaga_{vaga}.txt"
+    with open(filename, 'r') as file:
+        conteudo = file.read()
+        assert "Placa do Veículo: ABC1234" in conteudo
+        assert "Hora de Entrada:" in conteudo
+
+    # Limpa o arquivo após o teste
+    import os
+    os.remove(filename)
+
+def test_salvar_dados_json(estacionamento, veiculo):
+    # Estaciona o veículo
+    estacionamento.estacionar(veiculo)
+
+    # Salva os dados em um arquivo JSON temporário
+    filename = "test_estacionamento.json"
+    estacionamento.salvar_dados_json(filename)
+
+    # Verifica se o arquivo foi criado
+    with open(filename, 'r') as file:
+        dados = json.load(file)
+        assert dados["total_vagas"] == 10
+        assert len(dados["vagas"]) == 1
+
+    # Limpa o arquivo após o teste
+    import os
+    os.remove(filename)
+
+def test_limpar_dados(estacionamento, veiculo):
+    # Estaciona um veículo
+    estacionamento.estacionar(veiculo)
+    assert len(estacionamento.vagas) == 1
+
+    # Limpa os dados
+    estacionamento.limpar_dados()
+    assert len(estacionamento.vagas) == 0
+
+def test_salvar_vaga_txt_com_saida(estacionamento, veiculo):
+    # Estaciona o veículo
+    vaga = estacionamento.estacionar(veiculo)
+
+    # Registra a saída
+    veiculo.registrar_saida()
+
+    # Verifica se o arquivo foi criado
+    filename = f"vaga_{vaga}.txt"
+    with open(filename, 'r') as file:
+        conteudo = file.read()
+        assert "Placa do Veículo: ABC1234" in conteudo
+        assert "Hora de Entrada:" in conteudo
+        assert "Hora de Saída:" in conteudo
+        assert "Tempo de Permanência (minutos):" in conteudo
+        assert "Valor a Pagar: R$" in conteudo
+
+    # Limpa o arquivo após o teste
+    import os
+    os.remove(filename)
+
+def test_salvar_dados_json_com_multiplos_veiculos(estacionamento):
+    # Estaciona vários veículos
+    for i in range(1, 6):
+        veiculo = Veiculo(placa=f"ABC{i}")
+        estacionamento.estacionar(veiculo)
+
+    # Salva os dados em um arquivo JSON temporário
+    filename = "test_estacionamento_multiplos.json"
+    estacionamento.salvar_dados_json(filename)
+
+    # Verifica se o arquivo foi criado
+    with open(filename, 'r') as file:
+        dados = json.load(file)
+        assert dados["total_vagas"] == 10
+        assert len(dados["vagas"]) == 5
+
+    # Limpa o arquivo após o teste
+    import os
+    os.remove(filename)
+
+def test_procurar_veiculo_placa_invalida(estacionamento, veiculo):
+    # Estaciona o veículo
+    estacionamento.estacionar(veiculo)
+
+    # Procura um veículo com placa inválida
+    vaga_encontrada, veiculo_encontrado = estacionamento.procurar_veiculo("INVALIDA")
+    assert vaga_encontrada is None
+    assert veiculo_encontrado is None
+
+def test_calcular_valor_tempo_zero(veiculo):
+    # Registra a saída imediatamente após a entrada
+    veiculo.registrar_saida()
+
+    # Verifica se o valor é zero
+    assert veiculo.calcular_valor(preco_por_hora=5.0) == 0
+
+def test_gerar_qr_code_valor_zero(veiculo):
+    qr_code_img = veiculo.gerar_qr_code(valor=0.0)
+    assert qr_code_img is not None
